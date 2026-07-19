@@ -157,25 +157,21 @@ function VirtMonitor._sync_grid(resync_all)
         -- Resync all real monitors, very expensive!
         for k, v in pairs(CONFIG["monitors"]) do
             local m = peripheral.wrap(v)
-            m.setBackgroundColor(VirtMonitor["_bgc"])
-            m.setTextColor(VirtMonitor["_fgc"])
             if m.getTextScale() ~= 0.5 then
-                -- Reset text scale only if needed (saves content otherwise)
                 m.setTextScale(0.5)
             end
+            m.setBackgroundColor(VirtMonitor["_bgc"])
+            m.setTextColor(VirtMonitor["_fgc"])
             m.setCursorBlink(VirtMonitor["_cb"] and k == c_mid)
             m.setCursorPos(k == c_mid and rx or 1, k == c_mid and ry or (min_id <= k and k <= max_id) and ry or 1)
         end
     else
-        -- Resync only previous and new active (current) real monitors
-        -- Remove cursor blink if active (current) real monitor changed
-        if VirtMonitor["_pid"] ~= c_mid then
-            local m = peripheral.wrap(CONFIG["monitors"][VirtMonitor["_pid"]])
-            m.setCursorBlink(false)
-        end
+        -- Sync previous active real monitor
+        local m = peripheral.wrap(CONFIG["monitors"][VirtMonitor["_pid"]])
+        m.setCursorBlink(false)
 
         -- Sync active (current) real monitor state
-        local m = peripheral.wrap(CONFIG["monitors"][c_mid])
+        m = peripheral.wrap(CONFIG["monitors"][c_mid])
         m.setCursorBlink(VirtMonitor["_cb"])
         m.setCursorPos(rx, ry)
     end
@@ -259,8 +255,7 @@ function VirtMonitor.setCursorPos(x, y)
     VirtMonitor["_cx"] = x
     VirtMonitor["_cy"] = y
 
-    -- TODO: think about removing full resync to speedup this function
-    VirtMonitor._sync_grid(true)
+    VirtMonitor._sync_grid()
 end
 
 -- Function for getting blink state of the virtual cursor
@@ -280,63 +275,59 @@ end
 function VirtMonitor.write(text)
     text = tostring(text)
 
-    local c_mid, _, _, _, _, _, max_id = VirtMonitor._calc_real_pos()
-
+    local c_mid, rx, ry, _, _, _, max_id = VirtMonitor._calc_real_pos()
     local written_width = 0
 
-    -- Write only on monitors on the same row
-    for i = c_mid, max_id do
+    -- Write only on needed monitors on the same row
+    for i = c_mid, c_mid + math.min(max_id, math.ceil((#text + rx) / MONITOR_WIDTH)) - 1 do
         local m = peripheral.wrap(CONFIG["monitors"][i])
-        local cx, _ = m.getCursorPos()
+        local cx = i == c_mid and rx or 1
+        m.setCursorPos(cx, ry)
 
         -- Maximum width for current monitor that we can use to write text, can't be < 0
         local max_width = math.max(MONITOR_WIDTH - cx + 1, 0)
 
-        -- Write part of the text on the monitor
-        m.write(text:sub(written_width + 1, written_width + max_width))
+        -- Write current chunk of the text onto the monitor
+        local chunk = text:sub(written_width + 1, written_width + max_width)
+        m.write(chunk)
 
         -- Change total written width
-        written_width = written_width + #text:sub(written_width + 1, written_width + max_width)
+        written_width = written_width + #chunk
     end
-
-    -- Update cursot position after text write to sync everything
     VirtMonitor.setCursorPos(VirtMonitor["_cx"] + written_width, VirtMonitor["_cy"])
 end
 
 -- Function for blitting text on the monitors
 function VirtMonitor.blit(text, fgColor, bgColor)
-    -- Implementation based on write func, but does sub for fg and bg color strings
+    -- Implementation based on write func, but also does sub for fg and bg color strings
 
     text = tostring(text)
     fgColor = tostring(fgColor)
     bgColor = tostring(bgColor)
 
-    if #text ~= #fgColor or #text ~= #bgColor then
-        error("Text and colors length must be equal")
-    end
-
-    local c_mid, _, _, _, _, _, max_id = VirtMonitor._calc_real_pos()
-
+    local c_mid, rx, ry, _, _, _, max_id = VirtMonitor._calc_real_pos()
     local written_width = 0
 
-    -- Write only on monitors on the same row
-    for i = c_mid, max_id do
+    -- Write only on needed monitors on the same row
+    for i = c_mid, c_mid + math.min(max_id, math.ceil((#text + rx) / MONITOR_WIDTH)) - 1 do
         local m = peripheral.wrap(CONFIG["monitors"][i])
-        local cx, _ = m.getCursorPos()
+        local cx = i == c_mid and rx or 1
+        m.setCursorPos(cx, ry)
 
         -- Maximum width for current monitor that we can use to write text, can't be < 0
         local max_width = math.max(MONITOR_WIDTH - cx + 1, 0)
 
-        -- Blit part of the text on the monitor
-        m.blit(text:sub(written_width + 1, written_width + max_width),
+        -- Write current chunk of the text onto the monitor
+        local chunk = text:sub(written_width + 1, written_width + max_width)
+        m.blit(chunk,
             fgColor:sub(written_width + 1, written_width + max_width),
             bgColor:sub(written_width + 1, written_width + max_width))
 
         -- Change total written width
-        written_width = written_width + #text:sub(written_width + 1, written_width + max_width)
+        written_width = written_width + #chunk
     end
 
-    -- Update cursot position after text write to sync everything
+    -- Update cursot position after write to sync everything
     VirtMonitor.setCursorPos(VirtMonitor["_cx"] + written_width, VirtMonitor["_cy"])
 end
 
