@@ -26,9 +26,9 @@ wget https://raw.githubusercontent.com/lunare-os/apis/refs/heads/main/multimonit
 ### Usage
 
 ```lua
-local m = require("mm")
-local w,h = m.getSize()
-m.write("Hello, world!")
-m.setCursorPos(10,2)
-m.write("That's a ".. string.rep("very ", 24).. "long line btw :P")
+local mm = require("multimonitor")
+local w,h = mm.getSize()
+mm.write("Hello, world!")
+mm.setCursorPos(10,2)
+mm.write("That's a ".. string.rep("very ", 32).. "long line btw :P")
 ```
