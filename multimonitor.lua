@@ -1,17 +1,26 @@
+local floor = math.floor
+local min = math.min
+local max = math.max
+local ceil = math.ceil
+
 -- API Constants
-MONITOR_WIDTH = 164 -- 0.5 scaling, 8 blocks TODO: calc dynamically
-MONITOR_HEIGHT = 81 -- 0.5 scaling, 6 blocks TODO: calc dynamically
-CONFIG_PATH = './mm.json'
+local MONITOR_WIDTH = 164 -- 0.5 scaling, 8 blocks TODO: calc dynamically
+local MONITOR_HEIGHT = 81 -- 0.5 scaling, 6 blocks TODO: calc dynamically
+local CONFIG_PATH = './mm.json'
+
 -- List of background colors avaliable during setup
-COLORS = { "orange", "magenta", "lightBlue", "blue", "yellow", "lime", "green", "pink", "red", "purple", "cyan", "brown",
-    "gray", "lightGray" }
+local COLORS = { "orange", "magenta", "lightBlue", "blue", "yellow", "lime", "green", "pink", "red", "purple", "cyan",
+    "brown", "gray", "lightGray" }
 
 -- Prerun checks
-if #table.pack(peripheral.find("monitor")) == 0 then
-    error("Multimonitor API requires at least one connected monitor")
-elseif #table.pack(peripheral.find("monitor")) == 1 then
-    -- Return direct access to one real monitor without abstractions of this API
-    return table.pack(peripheral.find("monitor"))[1]
+do
+    local found = table.pack(peripheral.find("monitor"))
+    if found.n == 0 then
+        error("Multimonitor API requires at least one connected monitor")
+    elseif found.n == 1 then
+        -- Return direct access to one real monitor without abstractions of this API
+        return found[1]
+    end
 end
 
 -- Setup configuration
@@ -51,7 +60,7 @@ local function setup()
             local m = peripheral.wrap(e[2])
 
             m.setTextScale(0.5)
-            local row, col = math.floor((#monitors - 1) / w), (#monitors - 1) % w
+            local row, col = floor((#monitors - 1) / w), (#monitors - 1) % w
             if row == 0 then
                 total_width = total_width + table.pack(m.getSize())[1]
                 print(total_width)
@@ -107,7 +116,17 @@ local function load_config()
     return data
 end
 
-CONFIG = load_config()
+local CONFIG = load_config()
+local COLS = CONFIG["cols"]
+local ROWS = CONFIG["rows"]
+
+-- Wrap every monitor in the setup for further use
+local WRAPPED = {}
+for i, name in ipairs(CONFIG["monitors"]) do
+    WRAPPED[i] = peripheral.wrap(name)
+end
+
+local scale_synced = false
 
 VirtMonitor = {
     ["_cx"] = 1,
@@ -117,6 +136,7 @@ VirtMonitor = {
     ["_fgc"] = colors.white,
     ["_pid"] = -1
 }
+local VirtMonitor = VirtMonitor
 
 -- Function for calculating useful positioning info
 -- Returns:
@@ -128,23 +148,21 @@ VirtMonitor = {
 -- 6. Min ID of monitor in current row
 -- 7. Max ID of monitor in current row
 function VirtMonitor._calc_real_pos()
-    local col = math.min(CONFIG["cols"],
-        math.floor((VirtMonitor["_cx"] - 1) / MONITOR_WIDTH) + 1)
-    local row = math.min(CONFIG["rows"], math.floor((VirtMonitor["_cy"] - 1) / MONITOR_HEIGHT) + 1)
+    local cx, cy = VirtMonitor["_cx"], VirtMonitor["_cy"]
 
-    local mid = col +
-        math.min((CONFIG["cols"] * (CONFIG["rows"] - 1)),
-            CONFIG["cols"] * math.floor((VirtMonitor["_cy"] - 1) / MONITOR_HEIGHT))
+    local raw_col = floor((cx - 1) / MONITOR_WIDTH)
+    local raw_row = floor((cy - 1) / MONITOR_HEIGHT)
 
-    local rx = VirtMonitor["_cx"] -
-        math.min(math.floor((VirtMonitor["_cx"] - 1) / MONITOR_WIDTH) * MONITOR_WIDTH,
-            (MONITOR_WIDTH * CONFIG["cols"]) - 1)
-    local ry = VirtMonitor["_cy"] -
-        math.min(math.floor((VirtMonitor["_cy"] - 1) / MONITOR_HEIGHT) * MONITOR_HEIGHT,
-            (MONITOR_HEIGHT * CONFIG["rows"]) - 1)
+    local col = min(COLS, raw_col + 1)
+    local row = min(ROWS, raw_row + 1)
 
-    local min_id = 1 + ((row - 1) * CONFIG["cols"])
-    local max_id = row * CONFIG["cols"]
+    local mid = col + min(COLS * (ROWS - 1), COLS * raw_row)
+
+    local rx = cx - min(raw_col * MONITOR_WIDTH, (MONITOR_WIDTH * COLS) - 1)
+    local ry = cy - min(raw_row * MONITOR_HEIGHT, (MONITOR_HEIGHT * ROWS) - 1)
+
+    local min_id = 1 + (row - 1) * COLS
+    local max_id = row * COLS
 
     return mid, rx, ry, col, row, min_id, max_id
 end
@@ -154,24 +172,37 @@ function VirtMonitor._sync_grid(resync_all)
     local c_mid, rx, ry, _, _, min_id, max_id = VirtMonitor._calc_real_pos()
 
     if resync_all then
-        -- Resync all real monitors, very expensive!
-        for k, v in pairs(CONFIG["monitors"]) do
-            local m = peripheral.wrap(v)
-            if m.getTextScale() ~= 0.5 then
-                m.setTextScale(0.5)
+        -- Resync all real monitors, very expensive! Only runs at load and
+        -- on background/foreground color changes.
+
+        if not scale_synced then
+            -- Sync scaling of the monitors on first run
+            for _, m in ipairs(WRAPPED) do
+                if m.getTextScale() ~= 0.5 then
+                    m.setTextScale(0.5)
+                end
             end
+            scale_synced = true
+        end
+
+        for k, m in ipairs(WRAPPED) do
             m.setBackgroundColor(VirtMonitor["_bgc"])
             m.setTextColor(VirtMonitor["_fgc"])
             m.setCursorBlink(VirtMonitor["_cb"] and k == c_mid)
-            m.setCursorPos(k == c_mid and rx or 1, k == c_mid and ry or (min_id <= k and k <= max_id) and ry or 1)
+            -- Non-active monitors never show a blinking cursor so we don't need to sync them
+            if k == c_mid then
+                m.setCursorPos(rx, ry)
+            end
         end
     else
-        -- Sync previous active real monitor
-        local m = peripheral.wrap(CONFIG["monitors"][VirtMonitor["_pid"]])
-        m.setCursorBlink(false)
+        -- Sync only monitors that had changed
+        if VirtMonitor["_pid"] ~= c_mid then
+            -- Sync previous active monitor state
+            local pm = WRAPPED[VirtMonitor["_pid"]]
+            pm.setCursorBlink(false)
+        end
 
-        -- Sync active (current) real monitor state
-        m = peripheral.wrap(CONFIG["monitors"][c_mid])
+        local m = WRAPPED[c_mid]
         m.setCursorBlink(VirtMonitor["_cb"])
         m.setCursorPos(rx, ry)
     end
@@ -189,8 +220,8 @@ end
 
 -- Function for clearing entire setup (every real monitor)
 function VirtMonitor.clear()
-    for _, m in pairs(CONFIG["monitors"]) do
-        peripheral.wrap(m).clear()
+    for _, m in ipairs(WRAPPED) do
+        m.clear()
     end
 end
 
@@ -232,7 +263,7 @@ VirtMonitor.setBackgroundColor = VirtMonitor.setBackgroundColour
 -- Returns:
 -- 1. Whether this setup supports colors
 function VirtMonitor.isColor()
-    for _, m in pairs(CONFIG["monitors"]) do
+    for _, m in ipairs(WRAPPED) do
         if not m.isColor() then
             return false
         end
@@ -273,19 +304,21 @@ end
 
 -- Function for the writing text on the monitors
 function VirtMonitor.write(text)
-    text = tostring(text)
+    if type(text) ~= "string" then
+        text = tostring(text)
+    end
 
     local c_mid, rx, ry, _, _, _, max_id = VirtMonitor._calc_real_pos()
     local written_width = 0
 
     -- Write only on needed monitors on the same row
-    for i = c_mid, c_mid + math.min(max_id, math.ceil((#text + rx) / MONITOR_WIDTH)) - 1 do
-        local m = peripheral.wrap(CONFIG["monitors"][i])
+    for i = c_mid, c_mid + min(max_id, ceil((#text + rx) / MONITOR_WIDTH)) - 1 do
+        local m = WRAPPED[i]
         local cx = i == c_mid and rx or 1
         m.setCursorPos(cx, ry)
 
         -- Maximum width for current monitor that we can use to write text, can't be < 0
-        local max_width = math.max(MONITOR_WIDTH - cx + 1, 0)
+        local max_width = max(MONITOR_WIDTH - cx + 1, 0)
 
         -- Write current chunk of the text onto the monitor
         local chunk = text:sub(written_width + 1, written_width + max_width)
@@ -301,21 +334,21 @@ end
 function VirtMonitor.blit(text, fgColor, bgColor)
     -- Implementation based on write func, but also does sub for fg and bg color strings
 
-    text = tostring(text)
-    fgColor = tostring(fgColor)
-    bgColor = tostring(bgColor)
+    if type(text) ~= "string" then text = tostring(text) end
+    if type(fgColor) ~= "string" then fgColor = tostring(fgColor) end
+    if type(bgColor) ~= "string" then bgColor = tostring(bgColor) end
 
     local c_mid, rx, ry, _, _, _, max_id = VirtMonitor._calc_real_pos()
     local written_width = 0
 
     -- Write only on needed monitors on the same row
-    for i = c_mid, c_mid + math.min(max_id, math.ceil((#text + rx) / MONITOR_WIDTH)) - 1 do
-        local m = peripheral.wrap(CONFIG["monitors"][i])
+    for i = c_mid, c_mid + min(max_id, ceil((#text + rx) / MONITOR_WIDTH)) - 1 do
+        local m = WRAPPED[i]
         local cx = i == c_mid and rx or 1
         m.setCursorPos(cx, ry)
 
         -- Maximum width for current monitor that we can use to write text, can't be < 0
-        local max_width = math.max(MONITOR_WIDTH - cx + 1, 0)
+        local max_width = max(MONITOR_WIDTH - cx + 1, 0)
 
         -- Write current chunk of the text onto the monitor
         local chunk = text:sub(written_width + 1, written_width + max_width)
@@ -337,8 +370,7 @@ function VirtMonitor.clearLine()
 
     -- Clear line only for monitors in active (current) row
     for i = min_id, max_id do
-        local m = peripheral.wrap(CONFIG["monitors"][i])
-        m.clearLine()
+        WRAPPED[i].clearLine()
     end
 end
 
